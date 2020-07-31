@@ -112,8 +112,7 @@ local function parse(content, pos, list)
 	return pos
 end
 
-local function main(filename)
-	local content = readfile(filename)
+local function parse_all(content)
 	assert( content:sub(1, 4) == "@@b@" )
 
 	local pos = 5
@@ -124,9 +123,201 @@ local function main(filename)
 		pos = parse(content, pos, depth_list)
 	until pos == nil
 
-	local r = depth_list[1]
+	return depth_list[1]
+end
 
-	print_r(r)
+local webgltype = {
+	H = 5123, -- UNSIGNED_SHORT
+	f = 5126, -- FLOAT
+}
+
+local typeinfo = {
+	tri = {
+		componentType = 'H',
+		type = "SCALAR",
+		n = 1,
+		target = 34963, -- ELEMENT_ARRAY_BUFFER
+	},
+	p = {
+		componentType = 'f',
+		type = "VEC3",
+		n = 3,
+		target = 34962, -- ARRAY_BUFFER
+	},
+	n = {
+		componentType = 'f',
+		type = "VEC3",
+		n = 3,
+		target = 34962, -- ARRAY_BUFFER
+	},
+	ta = {
+		componentType = 'f',
+		type = "VEC4",
+		n = 4,
+		target = 34962, -- ARRAY_BUFFER
+	},
+	u0 = {
+		componentType = 'f',
+		type = "VEC2",
+		n = 2,
+		target = 34962, -- ARRAY_BUFFER
+	},
+}
+
+local function quote(v)
+	if type(v) == "string" then
+		return '"' .. v .. '"'
+	else
+		return tostring(v)
+	end
+end
+
+local function write_map(f, obj, level)
+	local is_array = #obj > 0
+	local indent = string.rep("  ", level)
+	local next_indent = string.rep("  ", level+1)
+	local sep = false
+
+	if is_array then
+		f:write("[\n")
+		for k,v in pairs(obj) do
+			if sep then
+				f:write(",\n")
+			end
+			f:write(next_indent)
+			if type(v) ~= "table" then
+				f:write(string.format("%s", quote(v)))
+			else
+				write_map(f, v, level+1)
+			end
+			sep = true
+		end
+		f:write(indent, "]")
+	else
+		f:write("{\n")
+		for k,v in pairs(obj) do
+			if sep then
+				f:write(",\n")
+			end
+			f:write(next_indent, string.format('"%s" : ', k))
+			if type(v) ~= "table" then
+				f:write(string.format("%s", quote(v)))
+			else
+				write_map(f, v, level+1)
+			end
+			sep = true
+		end
+		f:write(indent, "}")
+	end
+end
+
+local function write_json(obj, filename)
+	local f = assert(io.open(filename, "wb"))
+	write_map(f, obj, 0)
+	f:close()
+end
+
+local function to_gltf(obj, filename)
+	local buffers = { size = 0 }
+	local accessors = {}
+	local bufferViews = {}
+	local function gen_accessors(mesh, typename)
+		local data = mesh[typename]
+		if not data then
+			return nil
+		end
+		local info = typeinfo[typename]
+		local d = {}
+		local fmt = "<" .. info.componentType
+		for idx, v in ipairs(data) do
+			d[idx] = fmt:pack(v)
+		end
+		local view = #buffers
+		local blob = table.concat(d)
+		buffers[view+1] = blob
+		local accessor = {
+			bufferView = view,
+			componentType = webgltype[info.componentType],
+			count = #data // info.n ,
+			type = info.type,
+		}
+		accessors[view+1] = accessor
+		local bufferView = {
+			buffer = 0,
+			byteLength = #blob,
+			byteOffset = buffers.size,
+			target = info.target,
+		}
+		buffers.size = buffers.size + bufferView.byteLength
+		bufferViews[view+1] = bufferView
+		if typename == "p" then
+			local aabb = mesh.aabb
+			if aabb then
+				accessor.min = aabb.min
+				accessor.max = aabb.max
+			end
+		end
+		return view
+	end
+	local function gen_buffers(mesh)
+		local r = {
+			attributes = {},
+			indices = nil,
+			mode = 4, -- TRIANGLES(4)
+		}
+		r.indices = gen_accessors(mesh, "tri")
+		r.attributes.POSITION = gen_accessors(mesh, "p")
+		r.attributes.NORMAL = gen_accessors(mesh, "n")
+		r.attributes.TANGENT = gen_accessors(mesh, "ta")
+		r.attributes.TEXCOORD_0 = gen_accessors(mesh, "u0")
+		return r
+	end
+
+	local nodes_index = {}
+	local nodes = {}
+	local meshes = {}
+	local gltf = {
+		asset = {
+			generator = "PDX mesh to gltf",
+			version = "2.0",
+		},
+		scene = 0,
+		scenes = {
+			{ nodes = nodes_index },
+		},
+		nodes = nodes,
+		meshes = meshes,
+		buffers = {},
+		bufferViews = bufferViews,
+		accessors = accessors,
+	}
+	local index = 0
+	for name, object in pairs(obj.object) do
+		nodes_index[index + 1] = index
+		nodes[index + 1] = { mesh = index }
+		meshes[index + 1] = {
+			name = name,
+			primitives = { gen_buffers(object.mesh) },
+		}
+		index = index + 1
+	end
+
+	local bin = table.concat(buffers)
+	local binname = filename .. ".bin"
+	gltf.buffers[1] = { byteLength = #bin, uri = binname }
+	local binf = assert(io.open(binname, "wb"))
+	binf:write(bin)
+	binf:close()
+	write_json(gltf, filename .. ".gltf")
+end
+
+local function main(filename)
+	local content = readfile(filename)
+	local name_no_ext = filename:match "(.*)%.mesh$"
+
+	local r = parse_all(content)
+	--todo: export anim/mat, etc
+	to_gltf(r, name_no_ext)
 end
 
 main(...)
