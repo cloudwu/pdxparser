@@ -234,7 +234,15 @@ local function to_gltf(obj, filename)
 		end
 		local view = #buffers
 		local blob = table.concat(d)
-		buffers[view+1] = blob
+		local blob_aligned = blob
+		do
+			local length = #blob
+			local padding = 4 - length % 4
+			if padding ~=4 then
+				blob_aligned = blob .. string.rep("\0", padding)
+			end
+		end
+		buffers[view+1] = blob_aligned
 		local accessor = {
 			bufferView = view,
 			componentType = webgltype[info.componentType],
@@ -248,7 +256,7 @@ local function to_gltf(obj, filename)
 			byteOffset = buffers.size,
 			target = info.target,
 		}
-		buffers.size = buffers.size + bufferView.byteLength
+		buffers.size = buffers.size + #blob_aligned
 		bufferViews[view+1] = bufferView
 		if typename == "p" then
 			local aabb = mesh.aabb
